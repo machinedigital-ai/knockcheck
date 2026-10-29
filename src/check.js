@@ -77,7 +77,7 @@ async function readPage(input, fetcher, timeoutMs) {
             // adding private connectivity. Never use an inbound Request as fetch init.
             const response = await fetcher(current, {
                 method: "GET", redirect: "manual", signal: controller.signal,
-                headers: { "User-Agent": "RelayWatch/1.0 (website-health-check)", Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" },
+                headers: { "User-Agent": "KnockCheck/1.0 (website-health-check)", Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" },
                 credentials: "omit",
             });
             if ([301, 302, 303, 307, 308].includes(response.status)) {

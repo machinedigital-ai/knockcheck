@@ -3,12 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { checkWebsite, normalizeTarget } from './check.js';
 
-const usage = `RelayWatch: check a homepage and its contact or booking destination.
+const usage = `KnockCheck: check a homepage and its contact or booking destination.
 
 Usage:
   node src/cli.js check <homepage> <enquiry-url> [--json] [--timeout <seconds>]
   node src/cli.js check --config <file.json> [--json] [--timeout <seconds>]
-  relaywatch check <homepage> <enquiry-url> [--json] [--timeout <seconds>]
+  knockcheck check <homepage> <enquiry-url> [--json] [--timeout <seconds>]
 
 Options:
   --config <file>     JSON file containing {"sites":[{"name","url","contactUrl"}]}
@@ -76,7 +76,7 @@ export async function run(args,{check=checkWebsite,read=readFile,log=console.log
       log(`  Checked ${r.checkedAt}`);
     }
     return reports.some(r=>r.status==='attention') ? 1 : reports.some(r=>r.status!=='healthy') ? 2 : 0;
-  } catch(e) {error(`RelayWatch: ${e instanceof Error ? e.message : 'Unable to run check.'}`);return 2;}
+  } catch(e) {error(`KnockCheck: ${e instanceof Error ? e.message : 'Unable to run check.'}`);return 2;}
 }
 
 if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) process.exitCode=await run(process.argv.slice(2));
