@@ -1,0 +1,5 @@
+{
+  "sites": [
+    {"name": "My website", "url": "https://example.com/", "contactUrl": "https://example.com/contact"}
+  ]
+}

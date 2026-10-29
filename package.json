@@ -1,0 +1,11 @@
+{
+  "name": "relaywatch",
+  "version": "0.1.0",
+  "description": "Check whether a website and its contact or booking link respond.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {"node": ">=20"},
+  "bin": {"relaywatch": "./src/cli.js"},
+  "scripts": {"test": "node --test test/*.test.js"},
+  "files": ["src", "README.md", "LICENSE"]
+}
