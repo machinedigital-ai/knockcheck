@@ -1,11 +1,11 @@
 {
   "name": "knockcheck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check whether a website and its contact or booking link respond.",
   "type": "module",
   "license": "MIT",
   "engines": {"node": ">=20"},
   "bin": {"knockcheck": "./src/cli.js"},
   "scripts": {"test": "node --test test/*.test.js"},
-  "files": ["src", "README.md", "LICENSE"]
+  "files": ["src", "README.md", "LICENSE", "SECURITY.md", "CHANGELOG.md"]
 }

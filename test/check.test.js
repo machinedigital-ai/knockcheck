@@ -1,21 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {EventEmitter} from 'node:events';
+import {Readable} from 'node:stream';
+import {createSafeFetch} from '../src/network.js';
 import { normalizeTarget, isPublicAddress, hasEnquiryLink, checkWebsite } from '../src/check.js';
 
-function network(routes) {
-  const calls=[];
-  const fetcher=async (input, options={})=>{
-    const url=String(input); calls.push({url,options});
-    if (url.startsWith('https://cloudflare-dns.com/')) {
-      const type=new URL(url).searchParams.get('type');
-      return Response.json({Status:0,Answer:type==='A'?[{type:1,data:'93.184.216.34'}]:[]});
-    }
-    const response=routes[url];
-    if (typeof response === 'function') return response(options);
-    if (!response) throw new Error(`Unexpected target ${url}`);
-    return response;
-  };
-  return {fetcher,calls};
+function network(routes, answers=[{address:'93.184.216.34',family:4}]) {
+  const calls=[],lookups=[];
+  const fetcher=createSafeFetch({lookup:async host=>{lookups.push(host);return typeof answers==='function'?answers(host):answers;},request:(options,callback)=>{
+    const url='https://'+options.servername+options.path;calls.push({url,options});
+    const req=new EventEmitter();
+    req.destroy=()=>{};
+    req.end=()=>queueMicrotask(async()=>{
+      try {
+        let response=routes[url];if(typeof response==='function')response=await response(options);
+        if(!response)throw new Error('Unexpected target '+url);
+        const res=response.body?Readable.fromWeb(response.body):Readable.from([]);
+        res.statusCode=response.status;res.headers=Object.fromEntries(response.headers);
+        const abort=()=>res.destroy(new DOMException('aborted','AbortError'));
+        options.signal?.addEventListener('abort',abort,{once:true});
+        res.once('close',()=>options.signal?.removeEventListener('abort',abort));
+        callback(res);
+      }catch(error){req.emit('error',error);}
+    });
+    return req;
+  }});
+  return {fetcher,calls,lookups};
 }
 const html=body=>new Response(body,{headers:{'content-type':'text/html'}});
 
@@ -46,7 +56,7 @@ test('a passing scan makes credential-free GETs and returns evidence',async()=>{
   const result=await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher:n.fetcher});
   assert.equal(result.status,'healthy'); assert.equal(result.results.length,3);
   const target=n.calls.filter(c=>c.url.startsWith('https://agency.com'));
-  assert.ok(target.every(c=>c.options.method==='GET' && c.options.redirect==='manual' && c.options.credentials==='omit'));
+  assert.ok(target.every(c=>c.options.method==='GET' && c.options.hostname==='93.184.216.34' && c.options.servername==='agency.com' && c.options.rejectUnauthorized===true && !c.options.headers.Authorization && !c.options.headers.Cookie));
 });
 
 test('redirect to private address is blocked before the target is fetched',async()=>{
@@ -56,22 +66,21 @@ test('redirect to private address is blocked before the target is fetched',async
   assert.equal(n.calls.some(c=>c.url.includes('127.0.0.1')),false);
 });
 
-test('public-looking hostname resolving privately is blocked',async()=>{
-  const n=network({});
-  const fake=async (input,options)=>String(input).startsWith('https://cloudflare-dns.com/')
-    ? Response.json({Status:0,Answer:[{type:1,data:'10.0.0.1'}]}) : n.fetcher(input,options);
-  const result=await checkWebsite('https://private.agency.com/','https://private.agency.com/contact',{fetcher:fake});
-  assert.equal(result.status,'unknown'); assert.equal(n.calls.length,0);
+test('public-looking hostname resolving privately is blocked before connecting',async()=>{
+  const n=network({},[{address:'10.0.0.1',family:4}]);
+  const result=await checkWebsite('https://private.agency.com/','https://private.agency.com/contact',{fetcher:n.fetcher});
+  assert.equal(result.status,'unknown');assert.equal(n.calls.length,0);
 });
-
-test('DNS redirects are rejected without following or fetching the target',async()=>{
-  const calls=[];
-  const fetcher=async(url,options)=>{calls.push({url,options});return new Response('',{status:302,headers:{location:'https://evil.example.com/dns'}});};
-  const result=await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher});
-  assert.equal(result.status,'unknown');
-  assert.ok(calls.every(c=>c.url.startsWith('https://cloudflare-dns.com/') && c.options.redirect==='manual'));
+test('each request resolves only once and never uses global fetch or DoH',async()=>{
+  const n=network({'https://agency.com/':html('<a href="/contact">Contact</a>'),'https://agency.com/contact':html('Contact')});
+  assert.equal((await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher:n.fetcher})).status,'healthy');
+  assert.deepEqual(n.lookups,['agency.com','agency.com']);assert.equal(n.calls.length,2);
 });
-
+test('redirect hostname is resolved and private answers rejected before its connection',async()=>{
+  const n=network({'https://agency.com/':new Response('',{status:302,headers:{location:'https://private.agency.com/admin'}}),'https://agency.com/contact':html('Contact')},host=>[{address:host.startsWith('private.')?'127.0.0.1':'93.184.216.34',family:4}]);
+  const result=await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher:n.fetcher});
+  assert.equal(result.results[0].status,'unknown');assert.equal(n.calls.some(c=>c.options.servername==='private.agency.com'),false);
+});
 test('bot-blocked responses are inconclusive, server errors need attention',async()=>{
   const blocked=network({'https://agency.com/':new Response('',{status:403}),'https://agency.com/contact':new Response('',{status:429})});
   const result=await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher:blocked.fetcher});
@@ -93,4 +102,8 @@ test('HTML inspection is bounded and does not claim missing JS links are broken'
   const n=network({'https://agency.com/':html('x'.repeat(270000)+'<a href="/contact">Contact</a>'),'https://agency.com/contact':html('Contact')});
   const result=await checkWebsite('https://agency.com/','https://agency.com/contact',{fetcher:n.fetcher});
   assert.equal(result.results[2].status,'unknown'); assert.match(result.results[2].detail,/size limit/);
+});
+
+test('additional special-use and ambiguous addresses are rejected',()=>{
+  for(const a of ['192.0.0.9','192.0.0.192','168.63.129.16','0127.0.0.1','127.1','64:ff9b::7f00:1','64:ff9b:1::1','2001:20::1','2002:0808:0808::1','3fff:100::1','fe80::1%eth0','::ffff:8.8.8.8']) assert.equal(isPublicAddress(a),false,a);
 });

@@ -7,10 +7,10 @@ It checks the HTTP response from both URLs and looks for a matching static link 
 ## Requirements
 
 - Node.js 20 or newer.
-- Network access to Cloudflare's DNS-over-HTTPS service and the websites being checked.
+- DNS resolution and direct outbound HTTPS access to the websites being checked.
 - Public HTTPS URLs you own or have permission to monitor.
 
-No account, API key, subscription, or npm dependencies are needed. A check sends read-only GET requests to the destinations and their redirects. Domain names are sent to Cloudflare's public DNS resolver for destination validation.
+No account, API key, subscription, or npm dependencies are needed. A check sends read-only GET requests to the destinations and their redirects. It uses your system's DNS resolver; it does not send a separate DNS request to a third-party web API.
 
 ## Quick start
 
@@ -42,7 +42,11 @@ The tool checks up to five redirect steps and reads at most 256 KiB of successfu
 
 ## Security and privacy
 
-Use this as a local tool with URLs you trust. DNS preflight does not pin the IP address used by the later connection. A hostname could change between validation and connection; **do not expose this checker to untrusted URL submissions or run it in a network with sensitive internal services without proper network isolation and egress controls**. Configuration files and exported reports may contain URLs and should be protected appropriately; do not put passwords, tokens, or private customer information in URLs.
+Version 0.1.1 closes the DNS validation/connection gap present in 0.1.0. For every request, including each redirect, KnockCheck resolves the hostname, rejects the entire answer set if any address is non-public or malformed, and connects directly to one validated IP address. The HTTP client cannot resolve the hostname again. The original hostname is retained for SNI, the Host header, and certificate verification. Invalid certificates fail closed.
+
+The transport uses a fresh, explicit HTTPS agent, disables environment proxies and connection reuse, accepts HTTPS on port 443 only, and never forwards caller cookies, authorization headers, or request options. DNS, connection, TLS and body reads share a per-page deadline. Response headers and inspected HTML are bounded; unexpected compressed content is rejected. Private, loopback, link-local/metadata, CGNAT, documentation, multicast, mapped IPv4, NAT64 and selected IPv6 transition ranges are rejected conservatively.
+
+These controls address the identified SSRF/DNS-rebinding path. They are not an independent security audit or permission to scan arbitrary systems. If embedding the library in a public service, add authentication, rate limits, an appropriate destination allowlist, and network egress policy: a globally routable HTTPS address can still be sensitive, and deployment routing is outside this library's control. Keep configuration files and reports private, and do not put passwords, tokens, or private customer information in URLs. See [SECURITY.md](SECURITY.md).
 
 ## Development
 

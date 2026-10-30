@@ -1,65 +1,7 @@
+import { normalizeTarget } from './policy.js';
+import { safeFetch } from './network.js';
+export { normalizeTarget, isPublicAddress } from './policy.js';
 const MAX_HTML = 262_144;
-export function normalizeTarget(value) {
-    if (typeof value !== "string" || value.length > 2048)
-        throw new Error("Enter an HTTPS URL, up to 2,048 characters.");
-    let parsed;
-    try {
-        parsed = new URL(value.trim());
-    }
-    catch {
-        throw new Error("Enter a complete HTTPS URL, such as https://your-client.com.");
-    }
-    const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password || (parsed.port && parsed.port !== "443")) {
-        throw new Error("Only HTTPS URLs without credentials or custom ports are supported.");
-    }
-    if (host.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)
-        || /(?:^|\.)(?:localhost|local|internal|home|lan|test|invalid|example|onion)$/.test(host)) {
-        throw new Error("Use a public website hostname. IP addresses and private networks are not supported.");
-    }
-    parsed.hostname = host;
-    parsed.hash = "";
-    return parsed.href;
-}
-export function isPublicAddress(address) {
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(address)) {
-        const p = address.split(".").map(Number);
-        if (p.some(x => x > 255))
-            return false;
-        const [a, b, c] = p;
-        return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127)
-            || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-            || (a === 192 && (b === 168 || (b === 0 && (c === 0 || c === 2)) || (b === 88 && c === 99)))
-            || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) || (a === 203 && b === 0 && c === 113));
-    }
-    // URL parsing canonicalizes IPv6, including zero padding, before range checks.
-    try {
-        const canonical = new URL(`https://[${address}]/`).hostname.slice(1, -1);
-        const groups = canonical.split(":");
-        const first = parseInt(groups[0] || "0", 16), second = parseInt(groups[1] || "0", 16);
-        return first >= 0x2000 && first <= 0x3fff && first !== 0x2002 && first !== 0x3fff
-            && !(first === 0x2001 && (second < 0x0200 || second === 0x0db8));
-    }
-    catch {
-        return false;
-    }
-}
-async function verifyPublicHost(host, fetcher, signal) {
-    const answers = await Promise.all(["A", "AAAA"].map(async (type) => {
-        const response = await fetcher(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`, {
-            headers: { Accept: "application/dns-json" }, redirect: "manual", signal,
-        });
-        if (!response.ok)
-            throw new Error("Public DNS could not be verified.");
-        const json = await response.json();
-        if (json.Status !== 0)
-            throw new Error("This hostname did not resolve successfully.");
-        return (json.Answer ?? []).filter(a => a.type === 1 || a.type === 28).map(a => a.data);
-    }));
-    const addresses = answers.flat();
-    if (!addresses.length || !addresses.every(isPublicAddress))
-        throw new Error("This hostname does not resolve exclusively to public addresses.");
-}
 async function readPage(input, fetcher, timeoutMs) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -70,11 +12,6 @@ async function readPage(input, fetcher, timeoutMs) {
             if (visited.has(current))
                 throw new Error("The website has a redirect loop.");
             visited.add(current);
-            await verifyPublicHost(new URL(current).hostname, fetcher, controller.signal);
-            // DNS preflight is not connection pinning. Hosted safety also relies on
-            // Cloudflare global fetch's public-network boundary with no protected
-            // origin/VPC binding. Re-audit egress before porting to a Node server or
-            // adding private connectivity. Never use an inbound Request as fetch init.
             const response = await fetcher(current, {
                 method: "GET", redirect: "manual", signal: controller.signal,
                 headers: { "User-Agent": "KnockCheck/1.0 (website-health-check)", Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" },
@@ -89,6 +26,11 @@ async function readPage(input, fetcher, timeoutMs) {
                 continue;
             }
             const isHtml = /(?:text\/html|application\/xhtml\+xml)/i.test(response.headers.get("content-type") ?? "");
+            const encoding = response.headers.get("content-encoding");
+            if (encoding && encoding.toLowerCase() !== "identity") {
+                await response.body?.cancel();
+                throw new Error("The server returned unsupported compressed content.");
+            }
             let html = "", truncated = false;
             if (response.body && isHtml && response.ok) {
                 const reader = response.body.getReader();
@@ -119,6 +61,12 @@ async function readPage(input, fetcher, timeoutMs) {
             return { url: current, status: response.status, html, truncated, isHtml };
         }
         throw new Error("The website redirected too many times.");
+    }
+    catch (error) {
+        // Node may surface a cancelled response body as ECONNRESET rather
+        // than AbortError. Preserve the check's deadline semantics.
+        if (controller.signal.aborted) throw new DOMException('The check timed out.', 'AbortError');
+        throw error;
     }
     finally {
         clearTimeout(timer);
@@ -178,8 +126,9 @@ export function hasEnquiryLink(html, pageUrl, targets) {
     });
 }
 export async function checkWebsite(url, contactUrl, options = {}) {
-    const fetcher = options.fetcher ?? fetch;
+    const fetcher = options.fetcher ?? safeFetch;
     const timeout = options.timeoutMs ?? 12_000;
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 60000) throw new Error("Timeout must be between 1 and 60,000 milliseconds.");
     const pages = await Promise.allSettled([readPage(url, fetcher, timeout), readPage(contactUrl, fetcher, timeout)]);
     const results = pages.map((item, i) => item.status === "fulfilled"
         ? statusResult(i === 0 ? "Website availability" : "Enquiry destination", item.value)
